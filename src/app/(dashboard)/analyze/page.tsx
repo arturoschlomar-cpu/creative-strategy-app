@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Header } from "@/components/header";
 import { AdUpload } from "@/components/ad-upload";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -73,6 +74,8 @@ export default function AnalyzePage() {
     spend: "",
   });
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const router = useRouter();
 
   const handleMetric = (key: keyof Metrics, value: string) => {
     setMetrics((m) => ({ ...m, [key]: value }));
@@ -81,9 +84,24 @@ export default function AnalyzePage() {
   const handleAnalyze = async () => {
     if (!file) return;
     setIsAnalyzing(true);
-    // TODO: upload file + call Gemini API
-    await new Promise((r) => setTimeout(r, 2000));
-    setIsAnalyzing(false);
+    setError(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("title", title);
+      fd.append("platform", platform);
+      fd.append("label", label);
+      fd.append("metrics", JSON.stringify(metrics));
+
+      const res = await fetch("/api/analyze", { method: "POST", body: fd });
+      const data = await res.json();
+
+      if (!res.ok) throw new Error(data.error ?? "Analysis failed");
+      router.push(`/analyze/${data.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong");
+      setIsAnalyzing(false);
+    }
   };
 
   return (
@@ -199,6 +217,13 @@ export default function AnalyzePage() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Error */}
+        {error && (
+          <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+            {error}
+          </p>
+        )}
 
         {/* CTA */}
         <Button
