@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Header } from "@/components/header";
 import { AdUpload } from "@/components/ad-upload";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,7 +14,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Loader2, Sparkles, Trophy, Minus, TrendingDown } from "lucide-react";
+import { Loader2, Sparkles, Trophy, Minus, TrendingDown, AlertCircle } from "lucide-react";
+import { createClient } from "@/lib/supabase/client";
 
 type Label = "winner" | "loser" | "neutral";
 
@@ -58,7 +60,21 @@ const metricFields = [
   { key: "spend", label: "Spend", placeholder: "e.g. 1200", prefix: "$" },
 ];
 
+type AnalyzeStep =
+  | "idle"
+  | "uploading"
+  | "analyzing"
+  | "saving";
+
+const stepLabels: Record<AnalyzeStep, string> = {
+  idle: "Analyze Creative",
+  uploading: "Uploading file...",
+  analyzing: "Analyzing with Gemini...",
+  saving: "Saving results...",
+};
+
 export default function AnalyzePage() {
+  const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
   const [label, setLabel] = useState<Label>("neutral");
   const [platform, setPlatform] = useState<string>("meta");
@@ -72,7 +88,10 @@ export default function AnalyzePage() {
     roas: "",
     spend: "",
   });
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [step, setStep] = useState<AnalyzeStep>("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  const isAnalyzing = step !== "idle";
 
   const handleMetric = (key: keyof Metrics, value: string) => {
     setMetrics((m) => ({ ...m, [key]: value }));
@@ -80,16 +99,88 @@ export default function AnalyzePage() {
 
   const handleAnalyze = async () => {
     if (!file) return;
-    setIsAnalyzing(true);
-    // TODO: upload file + call Gemini API
-    await new Promise((r) => setTimeout(r, 2000));
-    setIsAnalyzing(false);
+
+    setError(null);
+    setStep("uploading");
+
+    try {
+      console.log(`[analyze] File selected: ${file.name}, ${file.size} bytes, ${file.type}`);
+
+      // --- Step 1: Upload to Supabase Storage ---
+      const supabase = createClient();
+
+      // Sanitize filename
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const filePath = `${Date.now()}-${safeName}`;
+
+      console.log("[analyze] Uploading to Supabase Storage bucket 'creatives'...");
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from("creatives")
+        .upload(filePath, file, { cacheControl: "3600", upsert: false });
+
+      if (uploadError) {
+        throw new Error(
+          `Storage upload failed: ${uploadError.message}. ` +
+          `Make sure the 'creatives' bucket exists in Supabase Storage and is set to Public.`
+        );
+      }
+
+      const { data: urlData } = supabase.storage
+        .from("creatives")
+        .getPublicUrl(uploadData.path);
+
+      const fileUrl = urlData.publicUrl;
+      console.log("[analyze] Upload complete, URL:", fileUrl);
+
+      // --- Step 2: Call analyze API ---
+      setStep("analyzing");
+      console.log("[analyze] Calling /api/analyze...");
+
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fileUrl,
+          fileName: file.name,
+          fileType: file.type,
+          metrics,
+          label,
+          title: title.trim() || file.name.replace(/\.[^/.]+$/, ""),
+          platform,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || `API error: ${response.status}`);
+      }
+
+      console.log("[analyze] Analysis complete, ad ID:", data.adId);
+      setStep("saving");
+
+      // --- Step 3: Redirect to results ---
+      router.push(`/analyze/${data.adId}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[analyze] Error:", message);
+      setError(message);
+      setStep("idle");
+    }
   };
 
   return (
     <>
       <Header title="Analyze Creative" subtitle="Upload an ad and enter its performance data" />
       <div className="mx-auto max-w-3xl p-6 space-y-6">
+
+        {/* Error banner */}
+        {error && (
+          <div className="flex items-start gap-3 rounded-lg border border-red-500/30 bg-red-500/10 p-4">
+            <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0 text-red-400" />
+            <p className="text-sm text-red-400">{error}</p>
+          </div>
+        )}
 
         {/* Upload */}
         <Card className="border-[#1E2530] bg-[#161B24]">
@@ -164,7 +255,10 @@ export default function AnalyzePage() {
         {/* Metrics */}
         <Card className="border-[#1E2530] bg-[#161B24]">
           <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-semibold text-white">Performance Metrics</CardTitle>
+            <CardTitle className="text-sm font-semibold text-white">
+              Performance Metrics{" "}
+              <span className="font-normal text-[#5A6478]">(optional)</span>
+            </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-4 gap-3">
@@ -209,7 +303,7 @@ export default function AnalyzePage() {
           {isAnalyzing ? (
             <>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Analyzing with AI...
+              {stepLabels[step]}
             </>
           ) : (
             <>
@@ -218,6 +312,13 @@ export default function AnalyzePage() {
             </>
           )}
         </Button>
+
+        {/* Setup hint */}
+        {!file && (
+          <p className="text-center text-xs text-[#5A6478]">
+            Requires: Supabase &ldquo;creatives&rdquo; storage bucket (public) + ads table in database.
+          </p>
+        )}
       </div>
     </>
   );
