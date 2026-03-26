@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { Header } from "@/components/header";
 import { AdUpload } from "@/components/ad-upload";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -75,7 +74,6 @@ export default function AnalyzePage() {
   });
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const router = useRouter();
 
   const handleMetric = (key: keyof Metrics, value: string) => {
     setMetrics((m) => ({ ...m, [key]: value }));
@@ -83,8 +81,20 @@ export default function AnalyzePage() {
 
   const handleAnalyze = async () => {
     if (!file) return;
+
+    console.log("[analyze page] File selected:", file.name, "type:", file.type, "size:", file.size);
+
+    // Warn about large images (>4MB Gemini inline limit)
+    const isVideo = file.type.startsWith("video/") || /\.(mov|mp4|avi|webm|mkv|m4v)$/i.test(file.name);
+    const MB = 1024 * 1024;
+    if (!isVideo && file.size > 4 * MB) {
+      setError("Image files must be under 4 MB. Please compress or resize the image before uploading.");
+      return;
+    }
+
     setIsAnalyzing(true);
     setError(null);
+
     try {
       const fd = new FormData();
       fd.append("file", file);
@@ -93,16 +103,24 @@ export default function AnalyzePage() {
       fd.append("label", label);
       fd.append("metrics", JSON.stringify(metrics));
 
+      console.log("[analyze page] Calling /api/analyze...");
       const res = await fetch("/api/analyze", { method: "POST", body: fd });
-      const data = await res.json();
+      console.log("[analyze page] API response status:", res.status);
 
-      if (!res.ok) throw new Error(data.error ?? "Analysis failed");
+      const data = await res.json();
       console.log("[analyze page] API response keys:", Object.keys(data));
       console.log("[analyze page] analysis keys:", data.analysis ? Object.keys(data.analysis) : "MISSING");
+
+      if (!res.ok) throw new Error(data.error ?? "Analysis failed");
+
+      console.log("[analyze page] Storing to localStorage...");
       localStorage.setItem("analysisResult", JSON.stringify(data));
-      console.log("[analyze page] stored to localStorage, redirecting...");
-      router.push(`/analyze/result`);
+      console.log("[analyze page] localStorage set. Value length:", localStorage.getItem("analysisResult")?.length);
+      console.log("[analyze page] Redirecting to /analyze/result...");
+      // Use window.location.href for reliable navigation after localStorage write
+      window.location.href = "/analyze/result";
     } catch (err) {
+      console.error("[analyze page] Error:", err);
       setError(err instanceof Error ? err.message : "Something went wrong");
       setIsAnalyzing(false);
     }

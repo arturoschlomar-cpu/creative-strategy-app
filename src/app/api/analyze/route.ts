@@ -99,41 +99,70 @@ export async function POST(req: NextRequest) {
     try {
       let parts: Parameters<typeof model.generateContent>[0];
 
-      if (file.type.startsWith("video/")) {
-        // Video: upload via File Manager
+      const isVideo = file.type.startsWith("video/") || file.name.match(/\.(mov|mp4|avi|webm|mkv|m4v)$/i);
+      console.log("[analyze] file type:", file.type, "| file name:", file.name, "| isVideo:", isVideo, "| size bytes:", file.size);
+
+      if (isVideo) {
+        // Video: upload via File Manager (no inline size limit)
         const fileManager = new GoogleAIFileManager(process.env.GEMINI_API_KEY!);
         const bytes = await file.arrayBuffer();
         const buffer = Buffer.from(bytes);
         const tmpPath = `/tmp/${storagePath}`;
         const { writeFileSync } = await import("fs");
         writeFileSync(tmpPath, buffer);
+        console.log("[analyze] Uploading video to Gemini File Manager...");
         const uploaded = await fileManager.uploadFile(tmpPath, {
-          mimeType: file.type,
+          mimeType: file.type || "video/mp4",
           displayName: title,
         });
+        console.log("[analyze] File Manager upload done. URI:", uploaded.file.uri, "| state:", uploaded.file.state);
+
+        // Poll until file is ACTIVE (processing can take a few seconds)
+        let fileState = uploaded.file.state;
+        let attempts = 0;
+        while (fileState !== "ACTIVE" && attempts < 20) {
+          await new Promise((r) => setTimeout(r, 3000));
+          const info = await fileManager.getFile(uploaded.file.name);
+          fileState = info.state;
+          attempts++;
+          console.log(`[analyze] File state poll ${attempts}: ${fileState}`);
+        }
+        if (fileState !== "ACTIVE") {
+          throw new Error(`Gemini file did not become ACTIVE after ${attempts} attempts (state: ${fileState})`);
+        }
+
         parts = [
           { fileData: { mimeType: uploaded.file.mimeType, fileUri: uploaded.file.uri } },
           { text: ANALYSIS_PROMPT },
         ];
       } else {
-        // Image: inline base64
+        // Image: inline base64 (warn if > 4MB)
+        const MB = 1024 * 1024;
+        if (file.size > 4 * MB) {
+          console.warn("[analyze] Image is >4MB:", file.size, "bytes. Gemini inline limit is 4MB — may fail.");
+        }
         const bytes = await file.arrayBuffer();
         const base64 = Buffer.from(bytes).toString("base64");
+        const mimeType = file.type || "image/jpeg";
+        console.log("[analyze] Sending image inline, mimeType:", mimeType, "base64 length:", base64.length);
         parts = [
-          { inlineData: { mimeType: file.type, data: base64 } },
+          { inlineData: { mimeType, data: base64 } },
           { text: ANALYSIS_PROMPT },
         ];
       }
 
+      console.log("[analyze] Calling Gemini generateContent...");
       const result = await model.generateContent(parts);
       const text = result.response.text().trim();
       console.log("[analyze] Gemini raw response (first 500 chars):", text.slice(0, 500));
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      // Strip markdown code fences if present
+      const stripped = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+      const jsonMatch = stripped.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         analysis = JSON.parse(jsonMatch[0]);
         console.log("[analyze] Gemini parsed analysis keys:", Object.keys(analysis));
       } else {
-        console.error("[analyze] Gemini response did not contain JSON:", text.slice(0, 500));
+        console.error("[analyze] Gemini response did not contain JSON. Full response:", text.slice(0, 1000));
       }
     } catch (geminiErr) {
       console.error("[analyze] Gemini error:", geminiErr);
