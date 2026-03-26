@@ -97,7 +97,8 @@ export default function AnalyzePage() {
       const data = await res.json();
 
       if (!res.ok) throw new Error(data.error ?? "Analysis failed");
-      router.push(`/analyze/${data.id}`);
+      localStorage.setItem("analysisResult", JSON.stringify(data));
+      router.push(`/analyze/result`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
       setIsAnalyzing(false);
