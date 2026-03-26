@@ -97,7 +97,10 @@ export default function AnalyzePage() {
       const data = await res.json();
 
       if (!res.ok) throw new Error(data.error ?? "Analysis failed");
+      console.log("[analyze page] API response keys:", Object.keys(data));
+      console.log("[analyze page] analysis keys:", data.analysis ? Object.keys(data.analysis) : "MISSING");
       localStorage.setItem("analysisResult", JSON.stringify(data));
+      console.log("[analyze page] stored to localStorage, redirecting...");
       router.push(`/analyze/result`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");

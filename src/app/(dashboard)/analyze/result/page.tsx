@@ -193,13 +193,19 @@ export default function AnalysisResultPage() {
 
   useEffect(() => {
     const raw = localStorage.getItem("analysisResult");
+    console.log("[result page] localStorage raw (first 200):", raw?.slice(0, 200));
     if (!raw) {
+      console.warn("[result page] No analysisResult in localStorage, redirecting");
       router.push("/analyze");
       return;
     }
     try {
-      setData(JSON.parse(raw));
-    } catch {
+      const parsed = JSON.parse(raw);
+      console.log("[result page] parsed keys:", Object.keys(parsed));
+      console.log("[result page] analysis keys:", parsed.analysis ? Object.keys(parsed.analysis) : "MISSING");
+      setData(parsed);
+    } catch (e) {
+      console.error("[result page] JSON parse error:", e);
       router.push("/analyze");
     }
   }, [router]);
@@ -213,6 +219,7 @@ export default function AnalysisResultPage() {
   }
 
   const a = data.analysis ?? {};
+  const analysisIsEmpty = Object.keys(a).length === 0;
   const overallScore = a.overall_score ?? 0;
   const hookScore = a.hook?.score ?? 0;
   const holdScore = a.hold?.score ?? 0;
@@ -232,7 +239,7 @@ export default function AnalysisResultPage() {
           </Link>
           <div className="text-center">
             <h1 className="text-base font-bold text-white">{data.title || "Ad Creative Analysis"}</h1>
-            <p className="text-xs text-zinc-500 capitalize">{data.platform} · {data.label}</p>
+            <p className="text-xs text-zinc-500 capitalize">{data.platform ?? "N/A"} · {data.label ?? "N/A"}</p>
           </div>
           <div className="flex items-center gap-2">
             <div className="rounded-full bg-[#F97316]/15 border border-[#F97316]/30 px-3 py-1 text-sm font-bold text-[#F97316]">
@@ -243,6 +250,13 @@ export default function AnalysisResultPage() {
       </div>
 
       <div className="mx-auto max-w-5xl px-6 py-6 space-y-6">
+        {/* Warn if Gemini returned no data */}
+        {analysisIsEmpty && (
+          <div className="rounded-xl border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-400">
+            AI analysis did not return data. The file was saved but Gemini could not process it. Check the server logs for details.
+          </div>
+        )}
+
         {/* Tab Nav */}
         <div className="flex gap-1 rounded-xl border border-[#27272A] bg-[#18181B] p-1 overflow-x-auto">
           {TABS.map((tab) => {

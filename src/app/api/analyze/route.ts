@@ -127,12 +127,16 @@ export async function POST(req: NextRequest) {
 
       const result = await model.generateContent(parts);
       const text = result.response.text().trim();
+      console.log("[analyze] Gemini raw response (first 500 chars):", text.slice(0, 500));
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         analysis = JSON.parse(jsonMatch[0]);
+        console.log("[analyze] Gemini parsed analysis keys:", Object.keys(analysis));
+      } else {
+        console.error("[analyze] Gemini response did not contain JSON:", text.slice(0, 500));
       }
     } catch (geminiErr) {
-      console.error("Gemini error:", geminiErr);
+      console.error("[analyze] Gemini error:", geminiErr);
       // Fallback: proceed with empty analysis
     }
 
@@ -155,7 +159,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: dbError.message }, { status: 500 });
     }
 
-    return NextResponse.json({ id: creative.id, analysis, title, platform, label, metrics, fileUrl });
+    const responsePayload = { id: creative.id, analysis, title, platform, label, metrics, fileUrl };
+    console.log("[analyze] Returning payload keys:", Object.keys(responsePayload), "| analysis keys:", Object.keys(analysis));
+    return NextResponse.json(responsePayload);
   } catch (err) {
     console.error("Analyze error:", err);
     return NextResponse.json(
