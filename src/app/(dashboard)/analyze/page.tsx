@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Header } from "@/components/header";
 import { AdUpload } from "@/components/ad-upload";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,7 +14,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Loader2, Sparkles, Trophy, Minus, TrendingDown } from "lucide-react";
+import { Loader2, Sparkles, Trophy, Minus, TrendingDown, AlertCircle } from "lucide-react";
+import { createClient } from "@/lib/supabase/client";
 
 type Label = "winner" | "loser" | "neutral";
 
@@ -59,6 +61,7 @@ const metricFields = [
 ];
 
 export default function AnalyzePage() {
+  const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
   const [label, setLabel] = useState<Label>("neutral");
   const [platform, setPlatform] = useState<string>("meta");
@@ -73,6 +76,8 @@ export default function AnalyzePage() {
     spend: "",
   });
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [statusMessage, setStatusMessage] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
   const handleMetric = (key: keyof Metrics, value: string) => {
     setMetrics((m) => ({ ...m, [key]: value }));
@@ -81,14 +86,91 @@ export default function AnalyzePage() {
   const handleAnalyze = async () => {
     if (!file) return;
     setIsAnalyzing(true);
-    // TODO: upload file + call Gemini API
-    await new Promise((r) => setTimeout(r, 2000));
-    setIsAnalyzing(false);
+    setError(null);
+    setStatusMessage("Uploading your creative...");
+
+    try {
+      const supabase = createClient();
+
+      // Check user is authenticated
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      if (authError || !user) {
+        throw new Error("You must be signed in to analyze ads. Please refresh and sign in again.");
+      }
+
+      // Upload file directly to Supabase Storage from the browser
+      const fileExt = file.name.split(".").pop();
+      const fileName = `${user.id}/${Date.now()}.${fileExt}`;
+
+      const { error: storageError } = await supabase.storage
+        .from("ads")
+        .upload(fileName, file, {
+          contentType: file.type,
+          upsert: false,
+        });
+
+      if (storageError) {
+        console.error("Storage upload error:", storageError);
+        throw new Error(`File upload failed: ${storageError.message}. Make sure the "ads" storage bucket exists in Supabase with public access.`);
+      }
+
+      // Get public URL
+      const { data: urlData } = supabase.storage.from("ads").getPublicUrl(fileName);
+      const fileUrl = urlData.publicUrl;
+
+      console.log("File uploaded, URL:", fileUrl);
+      setStatusMessage("Analyzing with AI... This may take up to 2 minutes for videos.");
+
+      // Build metrics object (only non-empty values)
+      const filteredMetrics = Object.fromEntries(
+        Object.entries(metrics).filter(([, v]) => v !== "")
+      );
+
+      // Call the analyze API with the file URL
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fileUrl,
+          mimeType: file.type,
+          title,
+          platform,
+          label,
+          metrics: filteredMetrics,
+        }),
+      });
+
+      const data = await response.json();
+      console.log("API response:", data);
+
+      if (!response.ok) {
+        throw new Error(data.error || `Analysis failed (status ${response.status})`);
+      }
+
+      if (data.warning) {
+        console.warn("Analysis warning:", data.warning);
+      }
+
+      if (data.id) {
+        // Redirect to detail page
+        router.push(`/analyze/${data.id}`);
+      } else {
+        // Analysis succeeded but wasn't saved to DB — show inline warning
+        setError(data.warning || "Analysis complete but could not be saved. Check database permissions.");
+        setIsAnalyzing(false);
+        setStatusMessage("");
+      }
+    } catch (err) {
+      console.error("handleAnalyze error:", err);
+      setError(err instanceof Error ? err.message : "An unexpected error occurred");
+      setIsAnalyzing(false);
+      setStatusMessage("");
+    }
   };
 
   return (
     <>
-      <Header title="Analyze Creative" subtitle="Upload an ad and enter its performance data" />
+      <Header title="Analyze Creative" subtitle="Upload an ad and get AI-powered creative analysis" />
       <div className="mx-auto max-w-3xl p-6 space-y-6">
 
         {/* Upload */}
@@ -113,7 +195,7 @@ export default function AnalyzePage() {
           <CardContent className="space-y-4">
             <div>
               <label className="mb-1.5 block text-xs font-medium text-[#8693A8]">
-                Creative Name
+                Creative Name <span className="text-[#5A6478]">(optional)</span>
               </label>
               <Input
                 placeholder="e.g. Pain Point Hook v2 — Meta"
@@ -140,7 +222,9 @@ export default function AnalyzePage() {
             </div>
 
             <div>
-              <label className="mb-2 block text-xs font-medium text-[#8693A8]">Performance Label</label>
+              <label className="mb-2 block text-xs font-medium text-[#8693A8]">
+                Performance Label <span className="text-[#5A6478]">(optional — defaults to Neutral)</span>
+              </label>
               <div className="flex gap-2">
                 {labelOptions.map((opt) => (
                   <button
@@ -161,10 +245,13 @@ export default function AnalyzePage() {
           </CardContent>
         </Card>
 
-        {/* Metrics */}
+        {/* Metrics — all optional */}
         <Card className="border-[#1E2530] bg-[#161B24]">
           <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-semibold text-white">Performance Metrics</CardTitle>
+            <CardTitle className="text-sm font-semibold text-white">
+              Performance Metrics{" "}
+              <span className="text-xs font-normal text-[#5A6478]">— all optional</span>
+            </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-4 gap-3">
@@ -200,6 +287,14 @@ export default function AnalyzePage() {
           </CardContent>
         </Card>
 
+        {/* Error display */}
+        {error && (
+          <div className="flex items-start gap-3 rounded-lg border border-red-500/30 bg-red-500/10 p-4">
+            <AlertCircle className="h-4 w-4 text-red-400 mt-0.5 flex-shrink-0" />
+            <p className="text-sm text-red-400">{error}</p>
+          </div>
+        )}
+
         {/* CTA */}
         <Button
           onClick={handleAnalyze}
@@ -209,7 +304,7 @@ export default function AnalyzePage() {
           {isAnalyzing ? (
             <>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Analyzing with AI...
+              {statusMessage || "Analyzing your ad... This may take up to 2 minutes"}
             </>
           ) : (
             <>
