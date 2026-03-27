@@ -3,6 +3,8 @@ import { createClient } from "@/lib/supabase/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { GoogleAIFileManager } from "@google/generative-ai/server";
 
+export const maxDuration = 120;
+
 const ANALYSIS_PROMPT = `You are an expert advertising creative analyst and performance marketer. Analyze this ad creative thoroughly and return ONLY valid JSON in this exact format (no markdown, no extra text):
 {
   "hook": { "score": <0-100>, "analysis": "<2-3 sentences about the opening hook>" },
@@ -135,6 +137,9 @@ export async function POST(req: NextRequest) {
           { fileData: { mimeType: uploaded.file.mimeType, fileUri: uploaded.file.uri } },
           { text: ANALYSIS_PROMPT },
         ];
+
+        // Cleanup temp file
+        try { (await import("fs")).unlinkSync(tmpPath); } catch {}
       } else {
         // Image: inline base64 (warn if > 4MB)
         const MB = 1024 * 1024;
